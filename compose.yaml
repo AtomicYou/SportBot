@@ -11,8 +11,15 @@ services:
     ports:
       - "127.0.0.1:8082:8082"
     volumes:
-      - ./data:/app/data
+      - ${SPORTBOT_DATA_DIR:-./data}:/app/data
     shm_size: "256mb"
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8082/',timeout=5); assert r.status==200"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
     logging:
       driver: json-file
       options:
