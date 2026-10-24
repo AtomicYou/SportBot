@@ -144,7 +144,7 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.portal.book.side_effect = book
         with patch.object(core, 'now', side_effect=lambda: clock[0]), patch.object(core.asyncio, 'sleep', side_effect=sleep):
             await self.engine.snipe('1', 99, 'Volleyball', self.dt)
-        self.assertEqual(attempts, [opening - timedelta(minutes=1), opening - timedelta(seconds=58)])
+        self.assertEqual(attempts, [opening - timedelta(minutes=1), opening - timedelta(seconds=59)])
 
     async def test_restart_scan_rebuilds_future_task(self):
         event = {'title': 'Volleyball', 'start': self.dt.isoformat(),

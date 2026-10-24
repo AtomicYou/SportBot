@@ -331,7 +331,7 @@ class Engine:
                     return
                 except PortalError:
                     log.warning('Booking request failed; retrying')
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
             await self.notify(uid, f'⏳ Не удалось записаться при открытии: {title}, {start:%d.%m %H:%M}. Продолжу обычный поиск.')
         except PortalError:
             log.warning('Could not prepare automatic booking')
