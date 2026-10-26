@@ -35,6 +35,7 @@ async function load(){
   try{
     if(demo){if(!state.ready)seed();}
     else{state.profile=await api('profile');const weeks=await Promise.all([api('schedule?week=0'),api('schedule?week=1')]);state.weeks={0:weeks[0],1:weeks[1]};}
+    if(!state.ready)state.week=initialScheduleWeek(state.weeks);
     state.ready=true;$('connection').textContent=demo?'Демонстрационный аккаунт':'Аккаунт подключён';$('connection').dataset.status='ready';render();
   }catch(error){notice(error.message);$('connection').textContent='Не удалось загрузить данные';$('connection').dataset.status='error';if(!state.ready)empty($('events'),'Не получилось подключиться','Открой приложение из Telegram после авторизации в боте.');}
   finally{state.busy=false;$('refresh').disabled=false;$('events').setAttribute('aria-busy','false');}
@@ -65,12 +66,15 @@ function sportIcon(title){
 function eventCard(event,booked=false){
   const card=node('article','card event-card');card.append(sportIcon(event.title));
   const body=node('div','card-body');
+  const started=Date.parse(event.start)<=Date.now();
+  const ended=Date.parse(event.end||event.start)<=Date.now();
   const futureOpen=new Date(event.opens_at)>new Date();
-  const label=event.checked_in?'Ты записан':event.can_check_in?'Запись доступна':futureOpen?'Скоро открытие':'Запись недоступна';
+  const label=started?(ended?'Завершено':'Уже началось'):event.checked_in?'Ты записан':event.can_check_in?'Запись доступна':futureOpen?'Скоро открытие':'Запись недоступна';
   const when=node('p','event-when');when.append(node('strong','',timeText(event.start)),node('span','',dateText(event.start)));
   body.append(node('span','badge '+(event.checked_in?'booked':event.can_check_in?'open':''),label),node('h3','',event.title),when);
   if(!event.checked_in&&!event.can_check_in&&futureOpen)body.append(node('p','',`Откроется ${dateText(event.opens_at)} в ${timeText(event.opens_at)}`));
   card.append(body);
+  if(started)return card;
   const button=node('button','secondary',booked?'Отменить':'Автозапись');
   if(booked)button.addEventListener('click',async()=>{
     if(!await confirmAction('Отменить запись?',`${event.title}, ${dateText(event.start)} в ${timeText(event.start)}. Бот больше не будет записывать на это занятие.`))return;
@@ -99,7 +103,7 @@ function eventCard(event,booked=false){
     const waiting=(state.profile.waitlist||[]).some(item=>item.id===event.id);
     const wait=node('button','secondary',waiting?'В ожидании':'В ожидание');wait.disabled=waiting;
     wait.addEventListener('click',async()=>{
-      if(!await confirmAction('Добавить в лист ожидания?',`${event.title}, ${dateText(event.start)} в ${timeText(event.start)}. Бот попробует записать тебя, когда портал разрешит запись. Пауза и защита от пересечений учитываются.`))return;
+      if(!await confirmAction('Добавить в лист ожидания?',`${event.title}, ${dateText(event.start)} в ${timeText(event.start)}. Бот попробует записать тебя, когда портал разрешит запись. Пауза автозаписи учитывается.`))return;
       await action(wait,async()=>{if(!demo)await api('waitlist/'+encodeURIComponent(event.id),'POST');(state.profile.waitlist??=[]).push({id:event.id,title:event.title,start:event.start});notice(state.profile.paused?'Добавлено в ожидание. Автозапись сейчас на паузе.':'Добавлено в лист ожидания.',true);});
     });actions.append(wait);
   }
@@ -114,15 +118,26 @@ function render(){
   for(const tab of ['schedule','wishes','bookings','plan'])$(tab).hidden=tab!==state.tab;
   document.querySelectorAll('[data-week]').forEach(button=>{const active=Number(button.dataset.week)===state.week;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));});
   renderEvents();renderWishes();renderBookings();renderWaiting();renderPlan();
-  const titles=[...new Set(Object.values(state.weeks).flatMap(w=>w.events.map(e=>e.title)))].sort();
-  $('sports').replaceChildren(...titles.map(title=>{const option=node('option');option.value=title;return option;}));
+  const titles=[...new Set(Object.values(state.weeks).flatMap(w=>[...(w.events||[]),...(w.past_bookings||[])].map(e=>e.title)).filter(title=>typeof title==='string'&&title.trim()))].sort((a,b)=>a.localeCompare(b,'ru'));
+  const selected=$('sport').value;
+  const placeholder=node('option','',titles.length?'Выбери тренировку':'В расписании пока нет занятий');placeholder.value='';
+  $('sport').replaceChildren(placeholder,...titles.map(title=>{const option=node('option','',title);option.value=title;return option;}));
+  $('sport').value=titles.includes(selected)?selected:'';
 }
+// BEGIN SCHEDULE MODEL
+function initialScheduleWeek(weeks){
+  return !(weeks[0]?.events||[]).some(e=>Date.parse(e.start)>Date.now())&&(weeks[1]?.events||[]).some(e=>Date.parse(e.start)>Date.now())?1:0;
+}
+function scheduleEvents(week){
+  return [...new Map([...(week.past_events||week.past_bookings||[]),...(week.events||[])].map(e=>[String(e.id),e])).values()].sort((a,b)=>a.start.localeCompare(b.start));
+}
+// END SCHEDULE MODEL
 function renderEvents(){
   if(!state.ready)return;
   const week=state.weeks[state.week];$('week-label').textContent=(state.week?'Следующая неделя · ':'Эта неделя · ')+dateText(week.week_start+'T12:00:00+03:00');
-  const events=week.events.filter(event=>event.title.toLocaleLowerCase().includes($('search').value.toLocaleLowerCase()));
+  const events=scheduleEvents(week).filter(event=>event.title.toLocaleLowerCase().includes($('search').value.toLocaleLowerCase()));
   const target=$('events');target.replaceChildren();
-  if(!events.length){empty(target,'Занятия не найдены',$('search').value?'Попробуй другое название занятия.':'Будущих занятий нет. Попробуй следующую неделю или обнови расписание.');return;}
+  if(!events.length){empty(target,'Занятия не найдены',$('search').value?'Попробуй другое название занятия.':'На эту неделю портал пока не опубликовал занятия. Проверь другую неделю или обнови расписание.');return;}
   let last='';for(const event of events){const day=format(event.start,{weekday:'long',day:'numeric',month:'long'});if(day!==last){target.append(node('h3','day-heading',day));last=day;}target.append(eventCard(event));}
 }
 function renderWishes(){
@@ -149,7 +164,7 @@ function renderWaiting(){
 function openWish(event){
   if(state.profile.features?.new_wishes===false){notice('Добавление целей временно отключено модератором.');return;}
   if(!state.ready){notice('Сначала дождись подключения аккаунта.');return;}
-  $('wish-form').reset();$('form-error').hidden=true;$('sport').value=event?.title||'';$('time-from').value='0';$('time-to').value='24';
+  $('wish-form').reset();$('form-error').hidden=true;$('wish-warning').hidden=true;unmatchedWish=null;$('sport').value=event?.title||'';$('time-from').value='0';$('time-to').value='24';
   if(event){ // Use calendar parts in Moscow, independent of browser timezone.
     const localDate=format(event.start,{year:'numeric',month:'2-digit',day:'2-digit'}).split('.');
     const index=(new Date(Date.UTC(+localDate[2],+localDate[1]-1,+localDate[0])).getUTCDay()+6)%7;
@@ -164,12 +179,19 @@ days.forEach((day,i)=>{const label=node('label','day-choice');const input=node('
 for(let hour=0;hour<=24;hour++)for(const id of ['time-from','time-to']){if(id==='time-from'&&hour===24)continue;const option=node('option','',String(hour).padStart(2,'0')+':00');option.value=hour;$(id).append(option);}
 $('pause').addEventListener('click',()=>action($('pause'),async()=>{const paused=!state.profile.paused;if(!demo)await api('pause','PUT',{paused});state.profile.paused=paused;notice(paused?'Автозапись приостановлена.':'Автозапись включена.',true);}));
 $('reminders-toggle').addEventListener('click',()=>action($('reminders-toggle'),async()=>{const enabled=state.profile.reminders===false;if(!demo)await api('reminders','PUT',{enabled});state.profile.reminders=enabled;notice(enabled?'Напоминания включены.':'Напоминания выключены.',true);}));
+let unmatchedWish=null;
+for(const type of ['input','change'])$('wish-form').addEventListener(type,()=>{unmatchedWish=null;$('wish-warning').hidden=true;});
 $('wish-form').addEventListener('submit',async event=>{
   event.preventDefault();if(state.busy)return;
   const payload={sport:$('sport').value.trim(),weekdays:[...document.querySelectorAll('[name=weekday]:checked')].map(i=>+i.value),time_from:+$('time-from').value,time_to:+$('time-to').value};
   if(!payload.weekdays.length||payload.time_from>=payload.time_to){$('form-error').textContent='Выбери дни и укажи конец окна позже начала.';$('form-error').hidden=false;return;}
+  const hasMatch=Object.values(state.weeks).some(week=>(week.events||[]).some(training=>Date.parse(training.start)>Date.now()&&planMatches(payload,training)));
+  const fingerprint=JSON.stringify(payload);
+  if(!hasMatch&&(event.submitter?.id!=='save-unmatched-wish'||unmatchedWish!==fingerprint)){
+    unmatchedWish=fingerprint;$('form-error').hidden=true;$('wish-warning').hidden=false;$('save-unmatched-wish').focus();return;
+  }
   const button=event.submitter;state.busy=true;button.disabled=true;
-  try{const wish=demo?{...payload,id:crypto.randomUUID()}:await api('wishes','POST',payload);state.profile.wishlist.push(wish);$('wish-dialog').close();state.tab='wishes';render();notice(demo?'Демо: цель добавлена. Реальных записей не будет.':'Цель добавлена. Поиск начнётся при ближайшей проверке, в течение трёх минут.',true);}
+  try{const wish=demo?{...payload,id:crypto.randomUUID()}:await api('wishes','POST',payload);state.profile.wishlist.push(wish);$('wish-dialog').close();state.tab='wishes';render();notice(demo?'Демо: цель добавлена. Реальных записей не будет.':!hasMatch?'Цель сохранена. Бот будет ждать подходящие занятия в расписании.':'Цель добавлена. Поиск начнётся при ближайшей проверке, в течение трёх минут.',true);}
   catch(error){$('form-error').textContent=error.message;$('form-error').hidden=false;}
   finally{state.busy=false;button.disabled=false;}
 });
@@ -209,11 +231,10 @@ function planItems(week,profile,clock=Date.now()){
     if(kind)result.push({...event,id,date:key,kind,past,paused:kind!=='booked'&&(Boolean(profile.paused)||profile.features?.auto_booking===false)});
   }
   const end=event=>{const value=Date.parse(event.end);return Number.isFinite(value)&&value>Date.parse(event.start)?value:Date.parse(event.start)+3600000;};
-  for(const item of result)item.conflict=item.kind!=='booked'&&result.some(other=>other.kind==='booked'&&other.id!==item.id&&Date.parse(item.start)<end(other)&&Date.parse(other.start)<end(item));
   return result.sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)||a.id.localeCompare(b.id));
 }
 // END WEEKLY PLAN MODEL
-function planLabel(item){return item.kind==='booked'?(item.past?'Запись прошла':'Ты записан'):item.paused?'На паузе':item.conflict?'Пересечение':item.kind==='waiting'?'Лист ожидания':'Автозапись';}
+function planLabel(item){return item.kind==='booked'?(item.past?'Запись прошла':'Ты записан'):item.paused?'На паузе':item.kind==='waiting'?'Лист ожидания':'Автозапись';}
 function renderPlan(){
   const target=$('plan-grid');if(!state.ready){empty(target,'План пока не загружен','Открой приложение из Telegram и обнови расписание.');return;}
   const week=state.weeks[state.week],items=planItems(week,state.profile);
@@ -229,7 +250,7 @@ function renderPlan(){
     const list=node('div','plan-day-items');const daily=items.filter(item=>item.date===key);
     if(!daily.length)list.append(node('p','plan-day-empty','Нет записей'));
     for(const item of daily){
-      const button=node('button','plan-item '+item.kind+(item.paused?' paused':'')+(item.conflict?' conflict':''));
+      const button=node('button','plan-item '+item.kind+(item.paused?' paused':''));
       button.append(node('span','plan-item-time',timeText(item.start)+(item.end?'–'+timeText(item.end):'')),node('strong','',item.title),node('span','plan-item-status',planLabel(item)));
       button.addEventListener('click',()=>openPlanItem(item));list.append(button);
     }
@@ -239,7 +260,7 @@ function renderPlan(){
 function openPlanItem(item){
   $('plan-title').textContent=item.title;$('plan-time').textContent=dateText(item.start)+' · '+timeText(item.start)+(item.end?'–'+timeText(item.end):'')+' · МСК';
   $('plan-status').textContent=item.kind==='booked'?(item.past?'Запись на прошедшее занятие. Посещение здесь не подтверждается.':'Место подтверждено спортивным порталом.'):
-    (item.kind==='waiting'?'Разовая запись через лист ожидания.':'Занятие подходит под регулярную цель автозаписи.')+(item.paused?' Автозапись на паузе.':'')+(item.conflict?' Есть пересечение с подтверждённой записью. Бот пропустит это занятие, пока пересечение не устранено.':'')+(item.missing?' Занятия сейчас нет в загруженном расписании.':'');
+    (item.kind==='waiting'?'Разовая запись через лист ожидания.':'Занятие подходит под регулярную цель автозаписи.')+(item.paused?' Автозапись на паузе.':'')+(item.missing?' Занятия сейчас нет в загруженном расписании.':'');
   const opens=item.opens_at||new Date(Date.parse(item.start)-7*86400000).toISOString();
   $('plan-opening').hidden=item.kind==='booked';$('plan-opening').textContent=Date.parse(opens)>Date.now()?'Открытие записи: '+dateText(opens)+' в '+timeText(opens):'Запись уже открывалась. Доступность зависит от свободных мест и условий портала.';
   const button=$('plan-open');button.hidden=item.past||item.missing;button.textContent=item.kind==='booked'?'Мои записи':'В расписание';

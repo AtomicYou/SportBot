@@ -35,50 +35,101 @@ class OwnerAlerts(logging.Handler):
         self.loop = asyncio.get_running_loop()
         self.queue = asyncio.Queue(maxsize=8)
         self.pending = set()
+        self.failures = {}
+        self.active = {}
+        self.notified = set()
+        self.clock = time.monotonic
         self.worker = asyncio.create_task(self.run())
 
+    def observe(self, category, key, ok):
+        """Track each account separately so another account cannot hide an outage."""
+        identity = (category, str(key))
+        if ok:
+            self.failures.pop(identity, None)
+            keys = self.active.get(category)
+            if keys is not None:
+                keys.discard(str(key))
+                if not keys:
+                    self.active.pop(category, None)
+                    if category in self.notified:
+                        self.enqueue(category, recovery=True, health=True)
+            return
+        clock = self.clock()
+        count, first = self.failures.get(identity, (0, clock))
+        self.failures[identity] = (count+1, first)
+        if count+1 >= 3 and clock-first >= 120:
+            opened = category in self.active
+            self.active.setdefault(category, set()).add(str(key))
+            if not opened or category not in self.notified:
+                self.enqueue(category, health=True)
+
     def emit(self, record):
-        if not self.owner or record.name == __name__:
+        if not self.owner or record.name == __name__ or getattr(record, 'owner_alert', True) is False:
             return
         category = category_for(record)
-        self.recent.append({"time": time.time(), "category": category})
+        if category == 'scheduler':
+            return  # Missed or overlapping runs remain warnings in the local log.
         # Neither exception text, log messages, nor account data leave the process.
         if not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self.enqueue, category)
+            if record.levelno >= logging.ERROR:
+                self.loop.call_soon_threadsafe(self.enqueue, category)
+            elif record.levelno >= logging.WARNING:
+                self.loop.call_soon_threadsafe(self.observe, category, record.name, False)
 
-    def enqueue(self, category):
-        if not self.owner or category not in LABELS or category in self.pending:
+    def enqueue(self, category, recovery=False, health=False):
+        pending_key = (category, recovery)
+        if not self.owner or category not in LABELS or pending_key in self.pending:
             return
         row = self.db.execute('SELECT last_sent FROM operational_alerts WHERE category=?', (category,)).fetchone()
-        if row and datetime.now(timezone.utc)-datetime.fromisoformat(row[0]) < timedelta(minutes=30):
+        if not recovery and row and datetime.now(timezone.utc)-datetime.fromisoformat(row[0]) < timedelta(minutes=30):
             return
-        self.pending.add(category)
-        self.queue.put_nowait(category)
+        try:
+            self.queue.put_nowait((category, recovery, health))
+        except asyncio.QueueFull:
+            return
+        self.pending.add(pending_key)
 
     async def run(self):
         while True:
-            category = await self.queue.get()
+            category, recovery, health = await self.queue.get()
             try:
                 while True:
+                    if health and ((recovery and category in self.active) or (not recovery and category not in self.active)):
+                        break  # Do not deliver an obsolete outage after the connection returns.
                     try:
-                        if category == 'scheduler':
+                        if recovery:
+                            message = 'Inno Sport: связь со спортивным порталом восстановлена.' if category == 'portal' else 'Inno Sport: работа восстановлена.'
+                        elif health:
+                            message = ('Inno Sport: повторяются сбои загрузки расписания.\n'
+                                       'Не менее трёх неудачных проверок за две минуты. Бот продолжает попытки; сообщу о восстановлении.') if category == 'portal' else ('Inno Sport: устойчивая проблема.\n'+LABELS[category])
+                        elif category == 'scheduler':
                             message = ('Задержка фоновой задачи Inno Sport\n'+LABELS[category]+
                                        '\nПри повторении проверь нагрузку и режим сна ноутбука.')
                         else:
                             message = ('Сбой Inno Sport\n'+LABELS[category]+
                                        '\nПроверь журнал и соединение сервера. Личные данные пользователей в уведомление не включены.')
                         await self.bot.send_message(self.owner, message)
+                        if not recovery:
+                            self.recent.append({'time': time.time(), 'category': category})
+                        if health:
+                            if recovery:
+                                self.notified.discard(category)
+                            else:
+                                self.notified.add(category)
+                                if category not in self.active:
+                                    self.enqueue(category, recovery=True, health=True)
+                        if not recovery:
+                            with self.db:
+                                self.db.execute('INSERT OR REPLACE INTO operational_alerts VALUES (?,?)',
+                                                (category, datetime.now(timezone.utc).isoformat()))
                         break
                     except asyncio.CancelledError:
                         raise
                     except Exception:
                         # Keep one pending alert until Telegram is reachable again.
                         await asyncio.sleep(60)
-                with self.db:
-                    self.db.execute('INSERT OR REPLACE INTO operational_alerts VALUES (?,?)',
-                                    (category, datetime.now(timezone.utc).isoformat()))
             finally:
-                self.pending.discard(category)
+                self.pending.discard((category, recovery))
                 self.queue.task_done()
 
     async def shutdown(self):

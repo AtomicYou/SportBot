@@ -62,58 +62,42 @@ class BookingFeatures:
         self.engine = engine
         self.store = engine.store
 
-    async def calendar(self, uid):
-        from core import AuthExpired, now
-        monday = now().date() - timedelta(days=now().weekday())
-        auth = await self.engine.auth(uid)
-        events = []
-        for offset in (0, 7):
-            start = monday + timedelta(days=offset)
-            try:
-                week = await self.engine.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
-            except AuthExpired:
-                auth = await self.engine.auth(uid, refresh=True)
-                week = await self.engine.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
-            events.extend(week)
-        return events
+    def health(self, category, uid, ok):
+        alerts = getattr(self.engine.app, 'owner_alerts', None)
+        if alerts is not None:
+            alerts.observe(category, str(uid), ok)
 
-    async def conflict(self, uid, tid, start, end, events=None):
-        from core import now, parse_date
-        if events is None:
-            events = await self.calendar(uid)
-        for event in events:
-            try:
-                extra = event.get('extendedProps', {})
-                other = str(extra.get('id'))
-                if not extra.get('checked_in') or other == str(tid) or extra.get('id') is None:
-                    continue
-                other_start, other_end = window(event)
-                if start < other_end and other_start < end:
-                    return True
-            except (ValueError, TypeError, KeyError):
-                continue
-        # Cover successful local check-ins while the portal calendar is catching up.
-        for other, a, b, confirmed in self.store.db.execute(
-                'SELECT training,start,end,confirmed_at FROM booking_times WHERE user=?', (str(uid),)):
-            if other == str(tid):
-                continue
-            present = next((e for e in events if str(e.get('extendedProps', {}).get('id')) == other), None)
-            if present is not None and not present.get('extendedProps', {}).get('checked_in'):
-                if now() - parse_date(confirmed) > timedelta(seconds=30):
-                    with self.store.db:
-                        self.store.db.execute('DELETE FROM booking_times WHERE user=? AND training=?', (str(uid), other))
-                    continue
-            if start < parse_date(b) and parse_date(a) < end:
-                return True
-        return False
+    async def calendar(self, uid):
+        from core import AuthExpired, PortalError, now
+        monday = now().date() - timedelta(days=now().weekday())
+        try:
+            auth = await self.engine.auth(uid)
+            events = []
+            for offset in (0, 7):
+                start = monday + timedelta(days=offset)
+                try:
+                    week = await self.engine.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
+                except AuthExpired:
+                    auth = await self.engine.auth(uid, refresh=True)
+                    week = await self.engine.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
+                events.extend(week)
+        except PortalError as error:
+            self.health('portal', uid, False)
+            error.owner_alert_reported = True
+            raise
+        self.health('portal', uid, True)
+        return events
 
     async def reminders(self):
         from core import now, parse_date
         for uid, user in list(self.store.users.items()):
-            if blocked(self.engine.app, uid) or not user.get('auth') or user.get('reminders', True) is False:
+            if blocked(self.engine.app, uid) or not user.get('auth'):
                 continue
             try:
                 events = await self.calendar(uid)
+                changed = await self.engine.reconcile_portal(uid, events, complete=True)
+                if changed and not user.get("paused"):
+                    await self.engine.scan(uid, events_snapshot=events)
                 for event in events:
                     await self.remind(uid, event)
                 with self.store.db:
@@ -123,7 +107,9 @@ class BookingFeatures:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                log.warning('Reminder calendar unavailable: %s', type(error).__name__)
+                log.log(logging.WARNING if getattr(error, 'owner_alert_reported', False) else logging.ERROR,
+                        'Reminder calendar unavailable: %s', type(error).__name__,
+                        extra={'owner_alert': not getattr(error, 'owner_alert_reported', False)})
 
     async def remind(self, uid, event):
         from core import now, parse_date
@@ -159,7 +145,9 @@ class BookingFeatures:
                         f'Напоминание: занятие {label}\n{event.get("title", "Занятие")}\n{start:%d.%m в %H:%M} · МСК',
                         reply_markup=keyboard)
                 except Exception as error:
-                    log.warning('Reminder delivery failed: %s', type(error).__name__)
+                    self.health('reminders', uid, False)
+                    log.warning('Reminder delivery failed: %s', type(error).__name__, extra={'owner_alert': False})
                 else:
+                    self.health('reminders', uid, True)
                     with self.store.db:
                         self.store.db.execute('UPDATE reminder_deliveries SET sent_at=? WHERE user=? AND training=? AND start=? AND lead=?', (clock.isoformat(), *key))

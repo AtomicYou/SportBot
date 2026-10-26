@@ -1,0 +1,22 @@
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync(require('node:path').join(__dirname,'web/app.js'),'utf8');
+const context=vm.createContext({});
+vm.runInContext(source.split('// BEGIN SCHEDULE MODEL')[1].split('// END SCHEDULE MODEL')[0],context);
+vm.runInContext("Date.now=()=>Date.parse('2026-10-25T20:00:00+03:00')",context);
+const past={id:'past',title:'Swimming',start:'2026-10-25T10:00:00+03:00',end:'2026-10-25T11:00:00+03:00'};
+const future={id:'future',title:'Yoga',start:'2026-10-26T18:00:00+03:00'};
+assert.equal(context.initialScheduleWeek({0:{events:[]},1:{events:[future]}}),1);
+assert.equal(context.initialScheduleWeek({0:{events:[future]},1:{events:[future]}}),0);
+assert.equal(context.initialScheduleWeek({0:{events:[]},1:{events:[]}}),0);
+assert.deepEqual(Array.from(context.scheduleEvents({past_events:[past],events:[future]}),e=>e.id),['past','future']);
+assert.deepEqual(Array.from(context.scheduleEvents({past_bookings:[past],events:[past]}),e=>e.id),['past']);
+// Exercise the real card renderer: past portal flags must never create booking controls.
+context.node=(tag,cls,text)=>({tag,text,children:[],append(...items){this.children.push(...items);}});
+context.sportIcon=()=>({tag:'icon'});context.dateText=context.timeText=()=>'';
+vm.runInContext('function eventCard'+source.split('function eventCard')[1].split('function render(){')[0],context);
+const card=context.eventCard({...past,can_check_in:true,checked_in:true,opens_at:'2026-10-18T10:00:00+03:00'});
+const descendants=x=>[x,...(x.children||[]).flatMap(descendants)];
+assert.equal(descendants(card).some(x=>x.tag==='button'),false);
+assert.equal(descendants(card).some(x=>x.text==='Завершено'),true);
+console.log('Schedule: initial week, historical events, deduplication and no past booking controls PASS.');

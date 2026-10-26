@@ -90,6 +90,17 @@ class APITests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('secret', json.dumps(payload))
         self.assertEqual((await self.client.get('/api/schedule?week=2', headers=self.headers)).status,400)
 
+    async def test_schedule_keeps_past_trainings_without_exposing_booking_actions(self):
+        past={**self.event,'start':(now()-timedelta(days=1)).isoformat(),
+              'extendedProps':{'id':43,'checked_in':False,'can_check_in':True}}
+        booked={**past,'extendedProps':{'id':44,'checked_in':True,'can_check_in':False}}
+        self.backend.portal.schedule.return_value=[past,booked,self.event]
+        data=await (await self.client.get('/api/schedule?week=0',headers=self.headers)).json()
+        self.assertEqual([e['id'] for e in data['events']],['42'])
+        self.assertEqual([e['id'] for e in data['past_events']],['43','44'])
+        self.assertEqual([e['id'] for e in data['past_bookings']],['44'])
+        self.assertNotIn('private_cookie',str(data))
+
     async def test_goal_and_pause_only_affect_authenticated_user(self):
         response=await self.client.post('/api/wishes',headers=self.headers,json={'sport':'Yoga','weekdays':[1],'time_from':9,'time_to':12})
         self.assertEqual(response.status,201)

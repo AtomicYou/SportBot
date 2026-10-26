@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 import core
@@ -72,34 +72,33 @@ class FeatureTests(unittest.IsolatedAsyncioTestCase):
         await self.client.delete('/api/waitlist/42', headers=self.headers)
         self.assertEqual(self.store.waiting('123'), [])
 
-    async def test_existing_portal_booking_blocks_manual_overlap(self):
+    async def test_existing_portal_booking_does_not_block_manual_overlap(self):
         other = {**self.event, 'extendedProps': {'id': 88, 'checked_in': True}}
         self.portal.schedule.return_value = [self.event, other]
         response = await self.client.post('/api/bookings/42/book', headers=self.headers)
-        self.assertEqual(response.status, 409)
-        self.portal.book.assert_not_awaited()
+        self.assertEqual(response.status, 200)
+        self.portal.book.assert_awaited_once()
 
-    async def test_two_different_simultaneous_bookings_cannot_overlap(self):
+    async def test_two_different_simultaneous_overlapping_bookings_are_allowed(self):
         second = {**self.event, 'extendedProps': {'id': 43, 'can_check_in': True}}
         self.portal.schedule.return_value = [self.event, second]
         results = await asyncio.gather(*(self.client.post('/api/bookings/'+tid+'/book', headers=self.headers) for tid in ('42','43')))
-        self.assertEqual(sorted(response.status for response in results), [200, 409])
-        self.portal.book.assert_awaited_once()
+        self.assertEqual(sorted(response.status for response in results), [200, 200])
+        self.assertEqual(self.portal.book.await_count, 2)
 
-    async def test_automatic_and_manual_booking_share_conflict_lock(self):
+    async def test_automatic_and_manual_overlapping_bookings_are_allowed(self):
         second = {**self.event, 'extendedProps': {'id': 43, 'can_check_in': True}}
         self.portal.schedule.return_value = [self.event, second]
         self.store.add_waiting('123', self.event)
         await asyncio.gather(self.engine.attempt('123',42,'Volleyball',self.start),
                              self.client.post('/api/bookings/43/book', headers=self.headers))
-        self.portal.book.assert_awaited_once()
+        self.assertEqual(self.portal.book.await_count, 2)
 
-    async def test_back_to_back_is_allowed_and_other_accounts_do_not_conflict(self):
-        end = self.start + timedelta(hours=1)
-        self.store.remember_interval('999', 100, self.start, end)
-        self.assertFalse(await self.engine.features.conflict('123',42,self.start,end,events=[]))
-        self.store.remember_interval('123', 100, self.start-timedelta(hours=1), self.start)
-        self.assertFalse(await self.engine.features.conflict('123',42,self.start,end,events=[]))
+    async def test_stored_intervals_do_not_block_booking(self):
+        self.store.remember_interval('123',100,self.start,self.start+timedelta(hours=1))
+        response = await self.client.post('/api/bookings/42/book',headers=self.headers)
+        self.assertEqual(response.status,200)
+        self.portal.book.assert_awaited_once()
 
     async def test_reminder_persistence_cancellation_opt_out_and_late_window(self):
         self.event['start'] = (now()+timedelta(hours=1)).isoformat()
@@ -154,6 +153,18 @@ class FeatureTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(alerts.queue.empty())
         finally:
             await alerts.shutdown()
+
+    async def test_calendar_reports_failure_and_success_to_same_health_component(self):
+        observer = Mock()
+        self.app.owner_alerts = SimpleNamespace(observe=observer)
+        self.portal.schedule.side_effect = core.PortalError('temporary')
+        with self.assertRaises(core.PortalError) as failure:
+            await self.engine.features.calendar('123')
+        self.assertTrue(failure.exception.owner_alert_reported)
+        observer.assert_called_once_with('portal','123',False)
+        self.portal.schedule.side_effect = None
+        await self.engine.features.calendar('123')
+        self.assertEqual(observer.call_args.args,('portal','123',True))
 
     async def test_unknown_owner_never_falls_back_to_another_user(self):
         alerts = OwnerAlerts(self.app.bot,self.store)

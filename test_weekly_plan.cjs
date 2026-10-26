@@ -15,7 +15,7 @@ const profile={wishlist:[wish('Volleyball',0,0,1),wish('Volleyball',0),wish('Yog
 let items=run(week,profile,'2026-10-25T10:00:00Z');
 assert.deepEqual(items.map(i=>i.id),['monday','booked','conflict','wait']);
 assert.equal(items[0].date,'2026-10-26');assert.equal(items[0].kind,'planned');
-assert.equal(items.find(i=>i.id==='conflict').conflict,true);assert.equal(items.find(i=>i.id==='wait').kind,'waiting');
+assert.equal(items.find(i=>i.id==='conflict').conflict,undefined);assert.equal(items.find(i=>i.id==='wait').kind,'waiting');
 items=run(week,{...profile,paused:true},'2026-10-25T10:00:00Z');
 assert.equal(items.find(i=>i.id==='booked').paused,false);assert.equal(items.find(i=>i.id==='wait').paused,true);
 const past={week_start:'2026-10-26',events:[],past_bookings:[event('old','Yoga','2026-10-26T10:00:00+03:00',true),event('not-booked','Yoga','2026-10-26T11:00:00+03:00')]};
@@ -25,4 +25,4 @@ items=run({week_start:'2026-10-26',events:[]},{waitlist:[{id:'orphan',title:'Box
 assert.equal(items[0].missing,true);assert.equal(items[0].kind,'waiting');
 items=run(week,{...profile,waitlist:[...profile.waitlist,{...week.events[5]}]},'2026-10-25T10:00:00Z');
 assert.equal(items.find(i=>i.id==='cancel').kind,'waiting');
-console.log('Weekly plan: timezone, deduplication, matching, pause, conflicts, cancellations, past bookings and waiting list checks passed.');
+console.log('Weekly plan: timezone, deduplication, matching, pause, overlapping entries, cancellations, past bookings and waiting list checks passed.');

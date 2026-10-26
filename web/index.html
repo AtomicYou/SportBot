@@ -5,7 +5,7 @@
   <meta name="theme-color" content="#f5f4ef"><title>Inno Sport</title>
   <link rel="stylesheet" href="/style.css?v=weekly-plan-1">
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
-  <script src="/app.js?v=weekly-plan-1" defer></script>
+  <script src="/app.js?v=schedule-2" defer></script>
 </head>
 <body>
 <div class="shell">
@@ -26,7 +26,7 @@
   </main>
   <footer><span>Inno Sport <span class="footer-divider">/</span> Иннополис</span><span>Московское время · UTC+3</span></footer>
 </div>
-<dialog id="wish-dialog"><form id="wish-form"><div class="dialog-head"><span class="eyebrow">АВТОЗАПИСЬ</span><button type="button" id="close-dialog" class="icon-button" aria-label="Закрыть">×</button></div><h2>Добавить цель</h2><p>Запись на все подходящие занятия выбранных дней.</p><label>Вид спорта<input name="sport" id="sport" list="sports" required maxlength="100" placeholder="Например, Volleyball"><datalist id="sports"></datalist></label><fieldset><legend>Дни недели</legend><div id="days" class="days"></div></fieldset><div class="time-fields"><label>Начало окна<select id="time-from" name="time_from"></select></label><label>Конец окна<select id="time-to" name="time_to"></select></label></div><p class="hint">Время начала занятия: от начала окна включительно до конца окна. Часовой пояс — Москва.</p><div id="form-error" role="alert" hidden></div><button type="submit" class="primary full">Включить автозапись</button></form></dialog>
+<dialog id="wish-dialog"><form id="wish-form"><div class="dialog-head"><span class="eyebrow">АВТОЗАПИСЬ</span><button type="button" id="close-dialog" class="icon-button" aria-label="Закрыть">×</button></div><h2>Добавить цель</h2><p>Запись на все подходящие занятия выбранных дней.</p><label>Вид спорта<select name="sport" id="sport" required><option value="">Выбери тренировку</option></select></label><fieldset><legend>Дни недели</legend><div id="days" class="days"></div></fieldset><div class="time-fields"><label>Начало окна<select id="time-from" name="time_from"></select></label><label>Конец окна<select id="time-to" name="time_to"></select></label></div><p class="hint">Время начала занятия: от начала окна включительно до конца окна. Часовой пояс — Москва.</p><div id="form-error" role="alert" hidden></div><div id="wish-warning" class="wish-warning" role="status" hidden><p>В расписании ближайших двух недель нет будущих занятий под выбранные дни и время. Можно изменить настройки или сохранить цель и ждать нового расписания.</p><button type="submit" id="save-unmatched-wish" class="secondary full">Всё равно сохранить</button></div><button type="submit" class="primary full">Включить автозапись</button></form></dialog>
 <dialog id="confirm-dialog"><form method="dialog"><h2 id="confirm-title">Подтвердить действие?</h2><p id="confirm-text"></p><div class="confirm-actions"><button value="no" class="secondary">Оставить</button><button value="yes" class="primary">Подтвердить</button></div></form></dialog>
 <dialog id="plan-dialog"><form method="dialog"><div class="dialog-head"><span class="eyebrow">МОЯ НЕДЕЛЯ</span><button class="icon-button" value="close" aria-label="Закрыть занятие">×</button></div><h2 id="plan-title"></h2><p id="plan-time"></p><p id="plan-status"></p><p id="plan-opening"></p><button id="plan-open" type="button" class="primary full">В расписание</button></form></dialog>
 </body></html>

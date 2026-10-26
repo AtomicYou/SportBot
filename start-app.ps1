@@ -40,7 +40,7 @@ try {
                 if ($tunnelProcess.HasExited) { throw 'Tunnel process exited before obtaining an address.' }
                 if (Test-Path -LiteralPath $tunnelLog) {
                     $tunnelText = Get-Content -LiteralPath $tunnelLog -Raw
-                    $urlMatch = [regex]::Match($tunnelText, 'https://[a-z0-9-]+\.trycloudflare\.com')
+                    $urlMatch = [regex]::Match($tunnelText, 'https://(?!api\.trycloudflare\.com\b)[a-z0-9-]+\.trycloudflare\.com')
                     if ($urlMatch.Success) { $publicUrl = $urlMatch.Value; break }
                 }
             }

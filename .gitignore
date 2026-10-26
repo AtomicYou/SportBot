@@ -23,3 +23,12 @@ build/
 dist/
 releases/
 .pytest_cache/
+
+# Private configurations and local user-app pilot (not published).
+**/google-services.json
+**/*firebase-adminsdk*.json
+**/*service-account*.json
+user-android/
+user_app_auth.py
+test_user_app_auth.py
+staged-updates/

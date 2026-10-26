@@ -65,6 +65,8 @@ class Store(BookingStorage):
         self._migrate_bookings()
         self._restore_telegram_profiles()
         self.init_booking_features()
+        from portal_sync import PortalSync
+        self.portal_sync = PortalSync(self)
 
     def _migrate_bookings(self):
         with self.db:
@@ -150,6 +152,7 @@ class Store(BookingStorage):
             self.db.execute('INSERT INTO approved_bookings(user,training,training_title,telegram_username) VALUES (?,?,?,?) ON CONFLICT(user,training) DO UPDATE SET training_title=coalesce(excluded.training_title,training_title),telegram_username=excluded.telegram_username', (uid,tid,title,username))
             self.db.execute('DELETE FROM cancelled_bookings WHERE user=? AND training=?',(uid,tid))
             self.db.execute('DELETE FROM waitlist WHERE user=? AND training=?',(uid,tid))
+            self.portal_sync.booked(uid, tid)
         user = self.users.get(uid)
         if user is not None:
             user['cancelled'] = [item for item in user.get('cancelled',[]) if item != tid]
@@ -236,7 +239,7 @@ class Engine:
 
     def active(self, uid, tid, title, start):
         user = self.store.users.get(str(uid), {})
-        return (not blocked(self.app, uid) and enabled(self.app, 'auto_booking') and not user.get('paused')
+        return (self.store.portal_sync.in_schedule(uid, tid) and not blocked(self.app, uid) and enabled(self.app, 'auto_booking') and not user.get('paused')
                 and (str(tid) not in user.get('cancelled', []) or self.store.is_waiting(uid, tid))
                 and not self.store.booked(uid, tid)
                 and (self.store.is_waiting(uid, tid) or any(matches(w, title, start) for w in user.get('wishlist', []))))
@@ -285,8 +288,6 @@ class Engine:
             if not self.active(uid, tid, title, start):
                 return True
             end = end or start + timedelta(hours=1)
-            if await self.features.conflict(uid, tid, start, end):
-                return False
             if not self.active(uid, tid, title, start):
                 return True
             auth = await self.auth(uid)
@@ -337,46 +338,49 @@ class Engine:
             log.warning('Could not prepare automatic booking')
             await self.notify(uid, '⚠️ Не удалось подготовить запись: портал недоступен или требуется повторный вход.')
 
-    async def scan(self, only_uid=None):
-        # Manual search and timer share one lock to prevent duplicate requests.
+    async def reconcile_portal(self, uid, events, complete=False):
+        cancelled, moved, changed = self.store.portal_sync.observe(uid, events, complete=complete)
+        for tid in moved:
+            task = self.tasks.pop((str(uid), tid), None)
+            if task and not task.done():
+                task.cancel()
+        for title in cancelled:
+            await self.notify(uid, f'Запись больше не подтверждается порталом: {title}. Повторная автозапись на это занятие отключена. Чтобы разрешить её, выбери занятие в Mini App и нажми «В ожидание» или запишись вручную.')
+        return changed
+
+    async def scan(self, only_uid=None, events_snapshot=None):
         async with self.lock:
             if not enabled(self.app, 'auto_booking'):
                 return
-            monday = now().date() - timedelta(days=now().weekday())
             for uid, user in list(self.store.users.items()):
                 if only_uid is not None and str(only_uid) != uid:
                     continue
                 if blocked(self.app, uid) or user.get('paused') or not user.get('auth') or not (user.get('wishlist') or self.store.waiting(uid)):
                     continue
                 try:
-                    auth = await self.auth(uid)
-                    for offset in (0, 7):
-                        start = monday + timedelta(days=offset)
+                    events = events_snapshot if events_snapshot is not None and only_uid is not None else await self.features.calendar(uid)
+                    await self.reconcile_portal(uid, events, complete=True)
+                    for event in events:
                         try:
-                            schedule = await self.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
-                        except AuthExpired:
-                            auth = await self.auth(uid, refresh=True)
-                            schedule = await self.portal.schedule(auth, str(start), str(start + timedelta(days=7)))
-                        for event in schedule:
-                            try:
-                                extra = event.get('extendedProps', {})
-                                tid, title, dt = extra.get('id'), event.get('title', ''), parse_date(event['start'])
-                                if tid is None or dt <= now() or not self.active(uid, tid, title, dt):
-                                    continue
-                                if extra.get('checked_in'):
-                                    self.store.mark_booked(uid, tid, title=title)
-                                    continue
-                                if extra.get('can_check_in'):
-                                    await self.attempt(uid, tid, title, dt, end=window(event)[1])
-                                elif now() < dt - timedelta(days=7) + timedelta(seconds=90):
-                                    key = (uid, str(tid))
-                                    if key not in self.tasks or self.tasks[key].done():
-                                        self.tasks[key] = asyncio.create_task(self.snipe(uid, tid, title, dt, end=window(event)[1]))
-                            except (KeyError, ValueError, TypeError):
-                                log.warning('Skipped malformed calendar event')
-                except PortalError:
+                            extra = event.get('extendedProps', {})
+                            tid, title, dt = extra.get('id'), event.get('title', ''), parse_date(event['start'])
+                            if tid is None or dt <= now() or not self.active(uid, tid, title, dt):
+                                continue
+                            if extra.get('checked_in'):
+                                self.store.mark_booked(uid, tid, title=title)
+                                continue
+                            if extra.get('can_check_in'):
+                                await self.attempt(uid, tid, title, dt, end=window(event)[1])
+                            elif now() < dt - timedelta(days=7) + timedelta(seconds=90):
+                                key = (uid, str(tid))
+                                if key not in self.tasks or self.tasks[key].done():
+                                    self.tasks[key] = asyncio.create_task(self.snipe(uid, tid, title, dt, end=window(event)[1]))
+                        except (KeyError, ValueError, TypeError):
+                            log.warning('Skipped malformed calendar event')
+                except PortalError as error:
                     self.scan_failures += 1
-                    log.warning('Calendar scan failed for one account')
+                    log.warning('Calendar scan failed for one account',
+                                extra={'owner_alert': not getattr(error, 'owner_alert_reported', False)})
             self.tasks = {key: task for key, task in self.tasks.items() if not task.done()}
 
     async def close(self):

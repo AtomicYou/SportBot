@@ -141,6 +141,8 @@ def create_app(bot_app=None):
         except AuthExpired:
             auth = await bot_app.engine.auth(uid, refresh=True)
             events = await bot_app.portal.schedule(auth, str(monday), str(monday + timedelta(days=7)))
+        if hasattr(bot_app.engine, 'reconcile_portal'):
+            await bot_app.engine.reconcile_portal(uid, events)
         if hasattr(bot_app.store, 'update_booking_titles'):
             bot_app.store.update_booking_titles(uid, events)
         return monday, events
@@ -152,6 +154,7 @@ def create_app(bot_app=None):
         monday, events = await load_week(request['uid'], offset)
         result = []
         past_bookings = []
+        past_events = []
         for event in events:
             try:
                 extra = event.get('extendedProps', {})
@@ -164,6 +167,7 @@ def create_app(bot_app=None):
                                'can_check_in': bool(extra.get('can_check_in')),
                                'opens_at': (start - timedelta(days=7)).isoformat()}
                 if start <= now():
+                    past_events.append(item)
                     if item['checked_in']:
                         past_bookings.append(item)
                 else:
@@ -171,7 +175,8 @@ def create_app(bot_app=None):
             except (ValueError, KeyError, TypeError):
                 continue
         return web.json_response({'week_start': str(monday), 'events': sorted(result, key=lambda e: e['start']),
-                                  'past_bookings': sorted(past_bookings, key=lambda e: e['start'])})
+                                  'past_bookings': sorted(past_bookings, key=lambda e: e['start']),
+                                  'past_events': sorted(past_events, key=lambda e: e['start'])})
 
     async def add_wish(request):
         if not enabled(bot_app, 'new_wishes'):
@@ -292,10 +297,7 @@ def create_app(bot_app=None):
                     return web.json_response({'ok': True, 'already_booked': True})
                 if not extra.get('can_check_in'):
                     raise web.HTTPConflict(text='Запись сейчас недоступна: возможно, она ещё не открылась или места закончились. Обнови расписание.')
-                feature_service = getattr(bot_app.engine, 'features', None)
                 start, end = window(target)
-                if feature_service is not None and await feature_service.conflict(uid, tid, start, end):
-                    raise web.HTTPConflict(text='Это занятие пересекается с другой твоей записью. Сначала отмени её или выбери другое время.')
                 if not enabled(bot_app, 'manual_booking'):
                     raise web.HTTPForbidden(text='Ручная запись временно отключена модератором.')
                 try:
