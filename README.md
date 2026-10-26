@@ -4,6 +4,8 @@ Telegram-бот и Mini App для расписания, разовой и ав�
 
 ## Запуск на сервере
 
+Для Debian 13 (trixie): [инструкция Debian](deploy/debian/README.md).
+
 Для домашнего NAS с Ubuntu Server: [инструкция Ubuntu](deploy/ubuntu/README.md), установка Docker и запуск одной командой после настройки .env.
 
 Инструкция Docker/Linux/NAS и перенос существующих пользователей: [DEPLOY.md](DEPLOY.md). Конфигурация Docker подготовлена; сборка контейнера на исходном ноутбуке не проверена из-за отсутствия Docker.

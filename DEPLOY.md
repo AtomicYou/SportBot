@@ -1,6 +1,6 @@
 # Перенос на Linux / NAS с Docker Compose
 
-Для Ubuntu Server на NAS использовать [пошаговую инструкцию и скрипты Ubuntu](deploy/ubuntu/README.md). В общих командах ниже добавлять `sudo` перед `docker`, если текущий пользователь не имеет доступа к Docker daemon.
+Для Debian 13 использовать [инструкцию и скрипты Debian](deploy/debian/README.md). Для Ubuntu Server на NAS использовать [пошаговую инструкцию и скрипты Ubuntu](deploy/ubuntu/README.md). В общих командах ниже добавлять `sudo` перед `docker`, если текущий пользователь не имеет доступа к Docker daemon.
 
 Исходники не содержат рабочего токена, баз, ключей и учётных данных. Docker-конфигурация подготовлена для Linux; её сборка на текущем Windows-ноутбуке не проверена, поскольку Docker отсутствует.
 
